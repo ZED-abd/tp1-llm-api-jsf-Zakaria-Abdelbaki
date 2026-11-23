@@ -1,6 +1,8 @@
 package com.zakariaabdelbaki.tp1.jsf;
 
-import com.zakariaabdelbaki.tp1.service.Modificateur;
+import com.zakariaabdelbaki.tp1.llm.JsonAdapterPourGemini;
+import com.zakariaabdelbaki.tp1.llm.LlmInteraction;
+import com.zakariaabdelbaki.tp1.llm.RequeteException;
 import jakarta.faces.application.FacesMessage;
 import jakarta.faces.context.FacesContext;
 import jakarta.faces.model.SelectItem;
@@ -21,11 +23,12 @@ import java.util.List;
 @ViewScoped
 public class Bb implements Serializable {
 
-    /**
-     * Rôle "système" que l'on attribuera plus tard à un LLM.
-     * Possible d'écrire un nouveau rôle dans la liste déroulante.
-     */
-    private String roleSysteme;
+    private static final String ROLE_ASSISTANT = """
+            You are a helpful assistant. You help the user to find the information they need.
+            If the user type a question, you answer it.
+            """;
+
+    private String roleSysteme = ROLE_ASSISTANT;
 
     /**
      * Quand le rôle est choisi par l'utilisateur dans la liste déroulante,
@@ -51,13 +54,12 @@ public class Bb implements Serializable {
      */
     private StringBuilder conversation = new StringBuilder();
 
-    /**
-     * Service pour modifier la question et générer la réponse.
-     * Remarque : la classe Modificateur sera remplacée lors de la tâche 1 par l'adaptateur LLM.
-     * Une erreur de compilation due à cette classe manquante est donc normale à ce stade.
-     */
+    private boolean debug;
+    private String texteRequeteJson;
+    private String texteReponseJson;
+
     @Inject
-    private Modificateur modificateur;
+    private JsonAdapterPourGemini jsonAdapter;
 
     /**
      * Contexte JSF. Utilisé pour qu'un message d'erreur s'affiche dans le formulaire.
@@ -107,6 +109,34 @@ public class Bb implements Serializable {
         this.conversation = new StringBuilder(conversation);
     }
 
+    public boolean isDebug() {
+        return debug;
+    }
+
+    public void setDebug(boolean debug) {
+        this.debug = debug;
+        if (!debug) {
+            texteRequeteJson = null;
+            texteReponseJson = null;
+        }
+    }
+
+    public String getTexteRequeteJson() {
+        return texteRequeteJson;
+    }
+
+    public void setTexteRequeteJson(String texteRequeteJson) {
+        this.texteRequeteJson = texteRequeteJson;
+    }
+
+    public String getTexteReponseJson() {
+        return texteReponseJson;
+    }
+
+    public void setTexteReponseJson(String texteReponseJson) {
+        this.texteReponseJson = texteReponseJson;
+    }
+
     /**
      * Envoie la question au serveur.
      *
@@ -121,25 +151,35 @@ public class Bb implements Serializable {
             return null;
         }
 
-        // Traite la question pour construire la réponse.
-        if (this.conversation.isEmpty()) { // Si la conversation n'a pas encore commencé
-            // Fige la liste déroulante qui permet de choisir le rôle système
-            this.roleSystemeChangeable = false;
+        if (this.conversation.isEmpty()) {
+            jsonAdapter.setSystemRole(this.roleSysteme);
         }
-        this.reponse = this.modificateur.modifier(this.question, this.roleSysteme);
-
-        // La conversation contient l'historique des questions-réponses depuis le début.
-        afficherConversation();
+        try {
+            LlmInteraction interaction = jsonAdapter.envoyerRequete(this.question);
+            this.reponse = interaction.reponseExtraite();
+            if (debug) {
+                texteRequeteJson = interaction.questionJson();
+                texteReponseJson = interaction.reponseJson();
+            }
+            this.roleSystemeChangeable = false;
+            afficherConversation();
+        } catch (RequeteException e) {
+            if (debug) {
+                texteRequeteJson = e.getRequeteJson();
+                texteReponseJson = null;
+            }
+            facesContext.addMessage(null, new FacesMessage(FacesMessage.SEVERITY_ERROR,
+                    "Erreur Gemini", e.getMessage()));
+        }
         return null;
     }
 
     /**
      * Pour un nouveau chat.
-     * Termine la portée view en retournant "index" et pas null.
-     * @return "index"
+     * La redirection ouvre une nouvelle vue et réinitialise la conversation.
      */
     public String nouveauChat() {
-        return "index";
+        return "index?faces-redirect=true";
     }
 
     /**
@@ -153,13 +193,9 @@ public class Bb implements Serializable {
         if (this.listeRolesSysteme == null) {
             // Génère les rôles de l'API prédéfinis
             this.listeRolesSysteme = new ArrayList<>();
-            String role = """
-                    You are a helpful assistant. You help the user to find the information they need.
-                    If the user type a question, you answer it.
-                    """;
-            this.listeRolesSysteme.add(new SelectItem(role, "Assistant"));
+            this.listeRolesSysteme.add(new SelectItem(ROLE_ASSISTANT, "Assistant"));
 
-            role = """
+            String role = """
                     You are an interpreter. You translate from English to French and from French to English.
                     If the user type a French text, you translate it into English.
                     If the user type an English text, you translate it into French.
@@ -173,6 +209,14 @@ public class Bb implements Serializable {
                     are you tell them the average price of a meal.
                     """;
             this.listeRolesSysteme.add(new SelectItem(role, "Guide touristique"));
+
+            role = """
+                    Tu es un philosophe socratique bienveillant, curieux et perspicace.
+                    Pour chaque question ou réflexion posée par l'utilisateur, tu apportes une analyse nuancée
+                    et profonde, puis tu termines toujours ta réponse par une question ouverte stimulante
+                    pour inciter l'utilisateur à pousser sa propre réflexion.
+                    """;
+            this.listeRolesSysteme.add(new SelectItem(role, "Philosophe Socratique (Bonus)"));
         }
 
         return this.listeRolesSysteme;
